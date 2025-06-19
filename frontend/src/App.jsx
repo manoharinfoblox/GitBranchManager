@@ -55,11 +55,9 @@ const styles = {
     backgroundColor: '#f5f5f5',
     borderRadius: '8px',
     padding: '1rem',
-    maxHeight: '300px',
+    maxHeight: '600px',
     overflowY: 'auto',
-    fontFamily: 'monospace',
-    whiteSpace: 'pre-wrap',
-    fontSize: '0.9rem',
+    overflowX: 'auto',
   },
 };
 
@@ -150,9 +148,16 @@ function App() {
       });
       console.log('Received response:', response.data);
       setProgress(100);
+      
+      // Ensure we have the correct data structure
+      const diffData = response.data;
+      if (!diffData || typeof diffData.diff !== 'string') {
+        throw new Error('Invalid response format from server');
+      }
+
       setResult({
         type: 'diff',
-        data: response.data,
+        data: diffData,
         message: 'Diff retrieved successfully'
       });
     } catch (err) {
@@ -191,6 +196,129 @@ function App() {
       setError(err.response?.data?.error || 'Failed to get conflicts');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const parseDiffOutput = (diffData) => {
+  if (!diffData || typeof diffData !== 'object') {
+    console.error('Invalid diff data:', diffData);
+    return {
+      newFiles: [],
+      modifiedFiles: [],
+      deletedFiles: []
+    };
+  }
+
+  const diffString = diffData.diff || '';
+  if (typeof diffString !== 'string') {
+    console.error('Invalid diff string:', diffString);
+    return {
+      newFiles: [],
+      modifiedFiles: [],
+      deletedFiles: []
+    };
+  }
+
+  const sections = diffString.split('\\n\\n');
+  const result = {
+    newFiles: [],
+    modifiedFiles: [],
+    deletedFiles: []
+  };
+
+  let currentSection = null;
+  for (const section of sections) {
+    if (section.includes('New Files')) {
+      currentSection = 'new';
+    } else if (section.includes('Modified Files')) {
+      currentSection = 'modified';
+    } else if (section.includes('Deleted Files')) {
+      currentSection = 'deleted';
+    } else if (currentSection && section.trim()) {
+      const files = section
+        .split('\\n')
+        .filter(line => line.trim().startsWith('•'))
+        .map(line => line.trim().substring(2).trim());
+      
+      if (currentSection === 'new') {
+        result.newFiles.push(...files);
+      } else if (currentSection === 'modified') {
+        result.modifiedFiles.push(...files);
+      } else if (currentSection === 'deleted') {
+        result.deletedFiles.push(...files);
+      }
+    }
+  }
+    return result;
+  };
+
+  const DiffResultCard = ({ title, files, color }) => (
+    <Paper elevation={3} sx={{ p: 3, mb: 2, borderTop: `4px solid ${color}` }}>
+      <Typography variant="h6" gutterBottom sx={{ color: color, display: 'flex', alignItems: 'center' }}>
+        {title} ({files.length})
+      </Typography>
+      <Box sx={{ maxHeight: '200px', overflowY: 'auto' }}>
+        {files.map((file, index) => (
+          <Typography 
+            key={index} 
+            component="div" 
+            sx={{ 
+              fontSize: '0.9rem',
+              fontFamily: 'monospace',
+              padding: '4px 8px',
+              borderRadius: '4px',
+              '&:hover': { backgroundColor: '#f5f5f5' },
+              marginBottom: '4px',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word'
+            }}
+          >
+            • {file}
+          </Typography>
+        ))}
+      </Box>
+    </Paper>
+  );
+
+  const renderDiffResult = (diffString) => {
+    try {
+      const parsedDiff = parseDiffOutput(diffString);
+      return (
+        <Box>
+          <Typography variant="h6" gutterBottom sx={{ color: '#1a237e', mt: 3 }}>
+            Changes Summary
+          </Typography>
+          <DiffResultCard 
+            title="New Files" 
+            files={parsedDiff.newFiles} 
+            color="#2e7d32" // Green
+          />
+          <DiffResultCard 
+            title="Modified Files" 
+            files={parsedDiff.modifiedFiles} 
+            color="#1976d2" // Blue
+          />
+          <DiffResultCard 
+            title="Deleted Files" 
+            files={parsedDiff.deletedFiles} 
+            color="#d32f2f" // Red
+          />
+        </Box>
+      );
+    } catch (error) {
+      console.error('Error parsing diff:', error);
+      return (
+        <pre style={{
+          margin: 0,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          fontFamily: 'monospace',
+          fontSize: '0.9rem',
+          lineHeight: '1.5'
+        }}>
+          {diffString}
+        </pre>
+      );
     }
   };
 
@@ -376,21 +504,42 @@ function App() {
             >
               {error}
             </Alert>
+          )}            {result && (
+            <Paper elevation={3} sx={{ ...styles.paper, p: 3 }}>
+              {result.type === 'diff' ? (
+                renderDiffResult(result.data)
+              ) : (
+                <>
+                  <Typography variant="h6" gutterBottom sx={{ color: '#1a237e' }}>
+                    Result
+                  </Typography>
+                  <Box sx={styles.resultBox}>
+                    <pre style={{
+                      margin: 0,
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      fontFamily: 'monospace',
+                      fontSize: '0.9rem',
+                      lineHeight: '1.5'
+                    }}>
+                      {JSON.stringify(result.data, null, 2)}
+                    </pre>
+                  </Box>
+                </>
+              )}
+              {/* Add debug info during development */}
+              {process.env.NODE_ENV === 'development' && (
+                <Box sx={{ mt: 2, p: 2, backgroundColor: '#f5f5f5', borderRadius: 1 }}>
+                  <Typography variant="caption" component="div" sx={{ fontFamily: 'monospace' }}>
+                    Debug: {JSON.stringify({ resultType: result.type, dataType: typeof result.data })}
+                  </Typography>
+                </Box>
+              )}
+            </Paper>
           )}
 
-          {result && (
-            <Paper elevation={3} sx={{ ...styles.paper, p: 3 }}>
-              <Typography variant="h6" gutterBottom sx={{ color: '#1a237e' }}>
-                Result
-              </Typography>
-              <Box sx={styles.resultBox}>
-                <Typography component="pre">
-                  {typeof result.data === 'string' 
-                    ? result.data 
-                    : JSON.stringify(result.data, null, 2)}
-                </Typography>
-              </Box>
-            </Paper>
+          {result?.type === 'diff' && result.data && (
+            renderDiffResult(result.data)
           )}
         </Box>
       </Container>
