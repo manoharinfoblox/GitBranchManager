@@ -1,13 +1,9 @@
 package com.gitmanager.service;
 
-import lombok.RequiredArgsConstructor;
 import org.eclipse.jgit.api.Git;
-import org.eclipse.jgit.api.MergeCommand;
 import org.eclipse.jgit.api.MergeResult;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.diff.DiffEntry;
-import org.eclipse.jgit.diff.DiffFormatter;
-import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
@@ -18,19 +14,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 public class GitService {
 
     private SseEmitter progressEmitter;
-    private static final Logger logger = LoggerFactory.getLogger(GitService.class);
 
     public void setProgressEmitter(SseEmitter emitter) {
         this.progressEmitter = emitter;
@@ -61,6 +57,8 @@ public class GitService {
         }
     }
 
+    private static final Logger logger = LoggerFactory.getLogger(GitService.class);
+
     public String getDiff(String sourceBranch, String targetBranch, String repositoryUrl, String token) throws GitAPIException, IOException {
         logger.info("Getting diff between {} and {} for repo {}", sourceBranch, targetBranch, repositoryUrl);
         try (Repository repository = openRepository(repositoryUrl, token); Git git = new Git(repository)) {
@@ -71,9 +69,9 @@ public class GitService {
                 .setCredentialsProvider(new UsernamePasswordCredentialsProvider("token", token))
                 .call();
             
-            // Helper method to safely checkout branch
-            checkoutBranch(git, sourceBranch, token);
-            checkoutBranch(git, targetBranch, token);
+            // Safely check out branches by first deleting them if they exist
+            safeCheckoutBranch(git, sourceBranch);
+            safeCheckoutBranch(git, targetBranch);
 
             // Get tree iterators for both branches
             ObjectReader reader = repository.newObjectReader();
@@ -91,30 +89,8 @@ public class GitService {
 
             logger.info("Found {} differences", diffs.size());
             
-            StringBuilder diffOutput = new StringBuilder();
-            diffOutput.append(String.format("Diff between %s and %s\n", sourceBranch, targetBranch));
-            diffOutput.append("----------------------------------------\n\n");
-
-            try (ByteArrayOutputStream out = new ByteArrayOutputStream();
-                 DiffFormatter formatter = new DiffFormatter(out)) {
-                formatter.setRepository(repository);
-                formatter.setContext(3); // Show 3 lines of context
-                
-                for (DiffEntry diff : diffs) {
-                    out.reset();
-                    formatter.format(diff);
-                    
-                    diffOutput.append(String.format("File: %s\n", diff.getNewPath()));
-                    diffOutput.append(String.format("Change Type: %s\n", diff.getChangeType()));
-                    diffOutput.append("----------------------------------------\n");
-                    diffOutput.append(out.toString("UTF-8"));
-                    diffOutput.append("\n\n");
-                }
-            }
-            
-            String result = diffOutput.toString();
-            logger.debug("Diff completed with {} files changed", diffs.size());
-            return result;
+            // Format the diff output using our helper method
+            return formatDiffOutput(diffs, repository);
         } catch (Exception e) {
             logger.error("Error getting diff: {}", e.getMessage(), e);
             throw new IOException("Failed to get diff: " + e.getMessage(), e);
@@ -170,27 +146,6 @@ public class GitService {
         }
     }
 
-    private void checkoutBranch(Git git, String branchName, String token) throws GitAPIException {
-        try {
-            // First try to checkout the existing branch
-            git.checkout()
-                .setName(branchName)
-                .call();
-            
-            // Update it to latest remote version
-            git.pull()
-                .setCredentialsProvider(new UsernamePasswordCredentialsProvider("token", token))
-                .call();
-        } catch (GitAPIException e) {
-            // If the branch doesn't exist locally, create it
-            git.checkout()
-                .setCreateBranch(true)
-                .setName(branchName)
-                .setStartPoint("origin/" + branchName)
-                .call();
-        }
-    }
-
     private static class GitProgressMonitor implements org.eclipse.jgit.lib.ProgressMonitor {
         private final SseEmitter emitter;
         private int totalWork;
@@ -233,7 +188,8 @@ public class GitService {
 
         @Override
         public void showDuration(boolean enabled) {
-            // Implementation not required for our use case
+            // This method is called to enable/disable duration display
+            // We don't need to implement anything here as we handle progress differently
         }
 
         private void sendProgress(int percentage) {
@@ -248,6 +204,72 @@ public class GitService {
             } catch (IOException e) {
                 logger.error("Error sending progress update: {}", e.getMessage());
             }
+        }
+    }
+
+    private String formatDiffOutput(List<DiffEntry> diffs, Repository repository) throws IOException {
+        // Group diffs by change type
+        Map<DiffEntry.ChangeType, List<DiffEntry>> groupedDiffs = diffs.stream()
+                .collect(Collectors.groupingBy(DiffEntry::getChangeType));
+
+        StringBuilder formattedOutput = new StringBuilder();
+        formattedOutput.append("Changes Summary\n");
+        formattedOutput.append("==============\n\n");
+        
+        // Process each change type in order: ADD, MODIFY, DELETE
+        processChangeTypeGroup(groupedDiffs, DiffEntry.ChangeType.ADD, "New Files", formattedOutput);
+        processChangeTypeGroup(groupedDiffs, DiffEntry.ChangeType.MODIFY, "Modified Files", formattedOutput);
+        processChangeTypeGroup(groupedDiffs, DiffEntry.ChangeType.DELETE, "Deleted Files", formattedOutput);
+        
+        String result = formattedOutput.toString().trim();
+        // Ensure consistent line endings and escape for JSON
+        return result.replace("\r\n", "\n").replace("\n", "\\n");
+    }
+
+    private void processChangeTypeGroup(Map<DiffEntry.ChangeType, List<DiffEntry>> groupedDiffs, 
+                                      DiffEntry.ChangeType changeType, 
+                                      String header,
+                                      StringBuilder output) {
+        List<DiffEntry> diffs = groupedDiffs.getOrDefault(changeType, Collections.emptyList());
+        if (!diffs.isEmpty()) {
+            output.append(header).append(" (").append(diffs.size()).append("):\n");
+            output.append("----------------------------------------\n\n");
+            
+            // Sort files alphabetically
+            List<String> sortedFiles = diffs.stream()
+                .map(diff -> changeType == DiffEntry.ChangeType.DELETE ? diff.getOldPath() : diff.getNewPath())
+                .sorted()
+                .collect(Collectors.toList());
+            
+            for (String file : sortedFiles) {
+                output.append("  • ").append(file).append("\n");
+            }
+            output.append("\n"); // Add extra newline between sections
+        }
+    }
+
+    private void safeCheckoutBranch(Git git, String branchName) throws GitAPIException {
+        try {
+            // First try to delete the branch if it exists
+            try {
+                git.branchDelete()
+                    .setBranchNames(branchName)
+                    .setForce(true)
+                    .call();
+            } catch (Exception e) {
+                // Ignore errors during branch deletion
+                logger.debug("Branch {} doesn't exist or couldn't be deleted: {}", branchName, e.getMessage());
+            }
+            
+            // Now checkout the branch fresh from origin
+            git.checkout()
+                .setName(branchName)
+                .setCreateBranch(true)
+                .setStartPoint("origin/" + branchName)
+                .call();
+        } catch (Exception e) {
+            logger.error("Error checking out branch {}: {}", branchName, e.getMessage());
+            throw e;
         }
     }
 }
