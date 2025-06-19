@@ -213,8 +213,6 @@ public class GitService {
                 .collect(Collectors.groupingBy(DiffEntry::getChangeType));
 
         StringBuilder formattedOutput = new StringBuilder();
-        formattedOutput.append("Changes Summary\n");
-        formattedOutput.append("==============\n\n");
         
         // Process each change type in order: ADD, MODIFY, DELETE
         processChangeTypeGroup(groupedDiffs, DiffEntry.ChangeType.ADD, "New Files", formattedOutput);

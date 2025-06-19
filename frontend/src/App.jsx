@@ -219,7 +219,12 @@ function App() {
     };
   }
 
-  const sections = diffString.split('\\n\\n');
+  // Skip the header and split the rest into sections
+  const sections = diffString.split('\\n\\n').filter(section => 
+    !section.includes('Changes Summary') && 
+    !section.includes('==============')
+  );
+  
   const result = {
     newFiles: [],
     modifiedFiles: [],
@@ -282,27 +287,23 @@ function App() {
 
   const renderDiffResult = (diffString) => {
     try {
-      const parsedDiff = parseDiffOutput(diffString);
-      return (
-        <Box>
-          <Typography variant="h6" gutterBottom sx={{ color: '#1a237e', mt: 3 }}>
-            Changes Summary
-          </Typography>
-          <DiffResultCard 
-            title="New Files" 
-            files={parsedDiff.newFiles} 
-            color="#2e7d32" // Green
-          />
-          <DiffResultCard 
-            title="Modified Files" 
-            files={parsedDiff.modifiedFiles} 
-            color="#1976d2" // Blue
-          />
-          <DiffResultCard 
-            title="Deleted Files" 
-            files={parsedDiff.deletedFiles} 
-            color="#d32f2f" // Red
-          />
+      const parsedDiff = parseDiffOutput(diffString);              return (
+                <Box>
+                  <DiffResultCard 
+                    title="New Files" 
+                    files={parsedDiff.newFiles} 
+                    color="#2e7d32" // Green
+                  />
+                  <DiffResultCard 
+                    title="Modified Files" 
+                    files={parsedDiff.modifiedFiles} 
+                    color="#1976d2" // Blue
+                  />
+                  <DiffResultCard 
+                    title="Deleted Files" 
+                    files={parsedDiff.deletedFiles} 
+                    color="#d32f2f" // Red
+                  />
         </Box>
       );
     } catch (error) {
@@ -538,9 +539,6 @@ function App() {
             </Paper>
           )}
 
-          {result?.type === 'diff' && result.data && (
-            renderDiffResult(result.data)
-          )}
         </Box>
       </Container>
     </Box>
