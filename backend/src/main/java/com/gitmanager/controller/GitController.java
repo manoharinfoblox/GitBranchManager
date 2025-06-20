@@ -5,15 +5,10 @@ import lombok.RequiredArgsConstructor;
 import org.eclipse.jgit.api.MergeResult;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.CrossOrigin;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -38,12 +33,33 @@ public class GitController {
             }
             
             MergeResult result = gitService.mergeBranches(sourceBranch, targetBranch, repositoryUrl, token);
-            return ResponseEntity.ok(Map.of(
-                "status", result.getMergeStatus().toString(),
-                "success", result.getMergeStatus().isSuccessful()
-            ));
+            
+            if (result.getMergeStatus().isSuccessful()) {
+                return ResponseEntity.ok(Map.of(
+                    "status", "Success",
+                    "success", true,
+                    "message", "Successfully merged " + sourceBranch + " into " + targetBranch
+                ));
+            } else if (result.getMergeStatus() == MergeResult.MergeStatus.CONFLICTING) {
+                return ResponseEntity.ok(Map.of(
+                    "status", "Conflict",
+                    "success", false,
+                    "message", "Merge conflicts detected",
+                    "conflicts", result.getConflicts().keySet()
+                ));
+            } else {
+                return ResponseEntity.ok(Map.of(
+                    "status", result.getMergeStatus().toString(),
+                    "success", false,
+                    "message", "Merge failed: " + result.getMergeStatus().toString()
+                ));
+            }
         } catch (Exception e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+            return ResponseEntity.badRequest().body(Map.of(
+                "error", e.getMessage(),
+                "status", "Failed",
+                "success", false
+            ));
         }
     }
 

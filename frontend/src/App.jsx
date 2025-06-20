@@ -228,7 +228,7 @@ function App() {
   const result = {
     newFiles: [],
     modifiedFiles: [],
-    deletedFiles: []
+    deletedFiles: [],
   };
 
   let currentSection = null;
@@ -319,6 +319,100 @@ function App() {
         }}>
           {diffString}
         </pre>
+      );
+    }
+  };
+
+  const MergeResultCard = ({ result }) => {
+    const isSuccess = result.data.success;
+    const color = isSuccess ? '#2e7d32' : '#d32f2f';
+    const icon = isSuccess ? '✓' : '✗';
+    const bgColor = isSuccess ? 'rgba(46, 125, 50, 0.04)' : 'rgba(211, 47, 47, 0.04)';
+    const borderColor = isSuccess ? '#4caf50' : '#f44336';
+    
+    return (
+      <Paper 
+        elevation={3} 
+        sx={{ 
+          p: 3, 
+          mb: 2, 
+          borderRadius: '8px',
+          borderLeft: `4px solid ${borderColor}`,
+          backgroundColor: bgColor,
+          transition: 'transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
+          '&:hover': {
+            transform: 'translateY(-2px)',
+            boxShadow: `0 6px 20px rgba(0, 0, 0, 0.1)`,
+          }
+        }}
+      >
+        <Typography 
+          variant="h6" 
+          gutterBottom 
+          sx={{ 
+            color: color, 
+            display: 'flex', 
+            alignItems: 'center',
+            gap: 1.5,
+            fontWeight: 600,
+            mb: 2
+          }}
+        >
+          <span style={{ 
+            fontSize: '1.4em',
+            backgroundColor: color,
+            color: 'white',
+            width: '32px',
+            height: '32px',
+            borderRadius: '50%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}>
+            {icon}
+          </span>
+          Merge {isSuccess ? 'Successful' : 'Failed'}
+        </Typography>
+        <Typography 
+          variant="body1" 
+          sx={{ 
+            fontFamily: 'monospace',
+            fontSize: '0.95rem',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            color: isSuccess ? '#2e7d32' : '#d32f2f',
+            backgroundColor: isSuccess ? 'rgba(76, 175, 80, 0.08)' : 'rgba(244, 67, 54, 0.08)',
+            p: 2,
+            borderRadius: '4px'
+          }}
+        >
+          {result.data.message || result.data.status}
+        </Typography>
+      </Paper>
+    );
+  };
+
+  const renderResult = () => {
+    if (!result) return null;
+
+    if (result.type === 'diff') {
+      return renderDiffResult(result.data);
+    } else if (result.type === 'merge') {
+      return <MergeResultCard result={result} />;
+    } else {
+      return (
+        <Box sx={styles.resultBox}>
+          <pre style={{
+            margin: 0,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            fontFamily: 'monospace',
+            fontSize: '0.9rem',
+            lineHeight: '1.5'
+          }}>
+            {JSON.stringify(result.data, null, 2)}
+          </pre>
+        </Box>
       );
     }
   };
@@ -514,18 +608,7 @@ function App() {
                   <Typography variant="h6" gutterBottom sx={{ color: '#1a237e' }}>
                     Result
                   </Typography>
-                  <Box sx={styles.resultBox}>
-                    <pre style={{
-                      margin: 0,
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                      fontFamily: 'monospace',
-                      fontSize: '0.9rem',
-                      lineHeight: '1.5'
-                    }}>
-                      {JSON.stringify(result.data, null, 2)}
-                    </pre>
-                  </Box>
+                  {renderResult()}
                 </>
               )}
               {/* Add debug info during development */}

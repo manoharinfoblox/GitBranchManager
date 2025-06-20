@@ -1,7 +1,10 @@
 package com.gitmanager.service;
 
+import org.eclipse.jgit.api.CreateBranchCommand;
 import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.MergeCommand;
 import org.eclipse.jgit.api.MergeResult;
+import org.eclipse.jgit.api.ResetCommand;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.lib.ObjectReader;
@@ -25,7 +28,8 @@ import java.util.stream.Collectors;
 
 @Service
 public class GitService {
-
+    private static final Logger logger = LoggerFactory.getLogger(GitService.class);
+    
     private SseEmitter progressEmitter;
 
     public void setProgressEmitter(SseEmitter emitter) {
@@ -34,30 +38,92 @@ public class GitService {
 
     public MergeResult mergeBranches(String sourceBranch, String targetBranch, String repositoryUrl, String token) throws GitAPIException, IOException {
         try (Repository repository = openRepository(repositoryUrl, token); Git git = new Git(repository)) {
-            // Fetch latest changes
+            logger.info("Starting merge process: {} into {}", sourceBranch, targetBranch);
+            UsernamePasswordCredentialsProvider credentialsProvider = new UsernamePasswordCredentialsProvider("token", token);
+            
+            // First, fetch all changes
+            logger.debug("Fetching latest changes...");
             git.fetch()
-                .setCredentialsProvider(new UsernamePasswordCredentialsProvider("token", token))
+                .setCredentialsProvider(credentialsProvider)
+                .setRemoveDeletedRefs(true)
                 .call();
             
-            // Checkout target branch
-            git.checkout().setName(targetBranch).setCreateBranch(true)
-                .setStartPoint("origin/" + targetBranch).call();
-            
-            // Update target branch
-            git.pull()
-                .setCredentialsProvider(new UsernamePasswordCredentialsProvider("token", token))
-                .call();
-            
-            // Merge source branch into target branch
-            return git.merge()
-                .include(repository.resolve("origin/" + sourceBranch))
-                .setCommit(true)
-                .setMessage("Merge " + sourceBranch + " into " + targetBranch)
-                .call();
+            try {
+                logger.debug("Attempting to checkout target branch: {}", targetBranch);
+                
+                try {
+                    // First try to checkout the existing branch
+                    git.checkout()
+                        .setName(targetBranch)
+                        .setCreateBranch(false)
+                        .call();
+                    logger.debug("Successfully checked out existing branch: {}", targetBranch);
+                } catch (Exception checkoutError) {
+                    logger.debug("Could not checkout existing branch, trying to create new one: {}", checkoutError.getMessage());
+                    
+                    // If checkout fails, try to delete and recreate
+                    try {
+                        git.branchDelete()
+                            .setBranchNames(targetBranch)
+                            .setForce(true)
+                            .call();
+                    } catch (Exception deleteError) {
+                        logger.debug("Branch deletion failed (might not exist): {}", deleteError.getMessage());
+                    }
+                    
+                    // Create new branch tracking remote
+                    git.checkout()
+                        .setName(targetBranch)
+                        .setCreateBranch(true)
+                        .setStartPoint("origin/" + targetBranch)
+                        .setForce(true)
+                        .call();
+                    
+                    logger.debug("Created and checked out new branch: {}", targetBranch);
+                }
+                
+                // Pull latest changes
+                logger.debug("Pulling latest changes for target branch");
+                git.pull()
+                    .setCredentialsProvider(credentialsProvider)
+                    .call();
+                
+                logger.info("Target branch {} prepared for merge", targetBranch);
+                
+                // Merge source branch into target branch
+                logger.debug("Starting merge from {} into {}", sourceBranch, targetBranch);
+                MergeCommand mergeCommand = git.merge();
+                mergeCommand.include(repository.resolve("origin/" + sourceBranch));
+                mergeCommand.setCommit(true);
+                mergeCommand.setMessage("Merge " + sourceBranch + " into " + targetBranch);
+                mergeCommand.setFastForward(MergeCommand.FastForwardMode.NO_FF);  // Force a merge commit
+                
+                MergeResult result = mergeCommand.call();
+                
+                if (result.getMergeStatus().isSuccessful()) {
+                    // Push the merge result
+                    logger.debug("Pushing merge result...");
+                    git.push()
+                        .setCredentialsProvider(credentialsProvider)
+                        .call();
+                    logger.info("Successfully pushed merge result");
+                }
+                
+                logger.info("Merge completed with status: {}", result.getMergeStatus());
+                return result;
+            } catch (Exception e) {
+                logger.error("Error during merge operation: {}", e.getMessage());
+                e.printStackTrace();
+                throw new GitAPIException("Merge operation failed: " + e.getMessage(), e) {
+                    private static final long serialVersionUID = 1L;
+                };
+            }
+        } catch (Exception e) {
+            logger.error("Critical error during merge process: {}", e.getMessage());
+            e.printStackTrace();
+            throw e;
         }
     }
-
-    private static final Logger logger = LoggerFactory.getLogger(GitService.class);
 
     public String getDiff(String sourceBranch, String targetBranch, String repositoryUrl, String token) throws GitAPIException, IOException {
         logger.info("Getting diff between {} and {} for repo {}", sourceBranch, targetBranch, repositoryUrl);
@@ -70,8 +136,8 @@ public class GitService {
                 .call();
             
             // Safely check out branches by first deleting them if they exist
-            safeCheckoutBranch(git, sourceBranch);
-            safeCheckoutBranch(git, targetBranch);
+            safeCheckoutBranch(git, sourceBranch, token);
+            safeCheckoutBranch(git, targetBranch, token);
 
             // Get tree iterators for both branches
             ObjectReader reader = repository.newObjectReader();
@@ -246,28 +312,83 @@ public class GitService {
         }
     }
 
-    private void safeCheckoutBranch(Git git, String branchName) throws GitAPIException {
+    private void safeCheckoutBranch(Git git, String branchName, String token) throws GitAPIException {
         try {
-            // First try to delete the branch if it exists
-            try {
-                git.branchDelete()
-                    .setBranchNames(branchName)
-                    .setForce(true)
-                    .call();
-            } catch (Exception e) {
-                // Ignore errors during branch deletion
-                logger.debug("Branch {} doesn't exist or couldn't be deleted: {}", branchName, e.getMessage());
-            }
+            logger.info("Starting safe checkout of branch: {}", branchName);
             
-            // Now checkout the branch fresh from origin
-            git.checkout()
-                .setName(branchName)
-                .setCreateBranch(true)
-                .setStartPoint("origin/" + branchName)
-                .call();
+            UsernamePasswordCredentialsProvider credentialsProvider = new UsernamePasswordCredentialsProvider("token", token);
+            
+            // First, fetch the latest changes
+            logger.debug("Fetching latest changes from remote...");
+            try {
+                git.fetch()
+                    .setRemoveDeletedRefs(true)
+                    .setCredentialsProvider(credentialsProvider)
+                    .call();
+                logger.debug("Fetch completed successfully");
+            } catch (Exception e) {
+                logger.error("Failed to fetch: {}", e.getMessage());
+                e.printStackTrace();
+                throw e;
+            }
+
+            try {
+                // First attempt: try to checkout the existing branch
+                logger.debug("Attempting to checkout branch without creation: {}", branchName);
+                git.checkout()
+                    .setName(branchName)
+                    .setCreateBranch(false)
+                    .call();
+                
+                // If successful, just pull the latest changes
+                git.pull()
+                    .setCredentialsProvider(credentialsProvider)
+                    .call();
+                
+                logger.info("Successfully checked out existing branch and pulled changes: {}", branchName);
+            } catch (Exception firstAttempt) {
+                logger.debug("Could not checkout existing branch, attempting to recreate: {}", firstAttempt.getMessage());
+                
+                try {
+                    // Clean up any existing refs
+                    git.branchDelete()
+                        .setBranchNames(branchName)
+                        .setForce(true)
+                        .call();
+                } catch (Exception deleteError) {
+                    logger.debug("Could not delete branch, might not exist: {}", deleteError.getMessage());
+                }
+                
+                try {
+                    // Reset any pending changes
+                    git.reset()
+                        .setMode(ResetCommand.ResetType.HARD)
+                        .call();
+                } catch (Exception resetError) {
+                    logger.debug("Reset failed, continuing anyway: {}", resetError.getMessage());
+                }
+                
+                // Create and checkout fresh branch
+                git.checkout()
+                    .setName(branchName)
+                    .setCreateBranch(true)
+                    .setStartPoint("origin/" + branchName)
+                    .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
+                    .call();
+                
+                // Pull to ensure we're up to date
+                git.pull()
+                    .setCredentialsProvider(credentialsProvider)
+                    .call();
+                
+                logger.info("Successfully recreated and checked out branch: {}", branchName);
+            }
         } catch (Exception e) {
-            logger.error("Error checking out branch {}: {}", branchName, e.getMessage());
-            throw e;
+            String errorMsg = String.format("Failed to checkout branch %s: %s", branchName, e.getMessage());
+            logger.error(errorMsg, e);
+            throw new GitAPIException(errorMsg, e) {
+                private static final long serialVersionUID = 1L;
+            };
         }
     }
 }
